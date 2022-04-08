@@ -90,7 +90,7 @@ class JNCEPSession:
             try:
                 console.info("Logout...")
                 await self.api.logout()
-            except (trio.MultiError, Exception) as ex:
+            except Exception as ex:
                 logger.debug(f"Error logout: {ex}", exc_info=sys.exc_info())
 
 
@@ -520,7 +520,7 @@ async def fetch_image(session, img_url):
         image = Image(img_url, img_bytes)
         image.local_filename = _local_image_filename(image)
         return image
-    except (trio.MultiError, Exception) as ex:
+    except Exception as ex:
         console.error(f"Error downloading image with URL: '{img_url}'")
         logger.debug(f"Error downloading image: {ex}", exc_info=sys.exc_info())
         # TODO still create the Image object with empty content ?
@@ -589,7 +589,7 @@ async def fetch_lowres_cover_for_volume(session, volume):
         cover_url = volume.raw_data.cover.coverUrl
         cover = await fetch_image(session, cover_url)
         return cover
-    except (trio.MultiError, Exception) as ex:
+    except Exception as ex:
         logger.debug(
             f"Error fetch_lowres_cover_for_volume: {ex}", exc_info=sys.exc_info()
         )

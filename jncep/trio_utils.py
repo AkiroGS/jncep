@@ -10,11 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def handle_BaseExceptions(exc):
-    if (
-        isinstance(exc, SystemExit)
-        or isinstance(exc, KeyboardInterrupt)
-        or isinstance(exc, GeneratorExit)
-    ):
+    if isinstance(exc, SystemExit) or isinstance(exc, KeyboardInterrupt):
         return exc
     if isinstance(exc, trio.MultiError):
         for ex in exc.exceptions:
@@ -28,7 +24,10 @@ def coro(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         try:
-            return trio.run(partial(f, *args, **kwargs))
+            return trio.run(
+                partial(f, *args, **kwargs),
+                restrict_keyboard_interrupt_to_checkpoints=True,
+            )
         except trio.MultiError as ex:
             # TODO does this make sense ???
             base_ex = handle_BaseExceptions(ex)
