@@ -63,12 +63,13 @@ def to_safe_filename(name, char_replace="_"):
     return safe
 
 
+# TODO remove ?
 def to_safe_foldername(name, char_replace="_"):
     name = "".join(
         c for c in unicodedata.normalize("NFD", name) if unicodedata.category(c) != "Mn"
     )
     # TODO test regex
-    safe = re.sub(r'[<>:"\/\\\|\?\*]+', char_replace, name)
+    safe = re.sub(r'[<>:"/\\|?*]+', char_replace, name)
     safe = safe.strip(char_replace)
     return safe
 

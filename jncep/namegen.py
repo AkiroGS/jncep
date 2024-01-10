@@ -59,12 +59,13 @@ GEN_RULES = [
     "s_rm_stopwords",
     "s_acronym",
     "s_trigram",
+    "s_max_len60",
     "_t",  # special processing : takes title as starting point
     "text",
-    "max_len60",
     "rm_space",
     "filesafe_underscore",
     "filesafe_space",
+    # TODO remove ? use only filesafe
     "foldersafe_underscore",
     "foldersafe_space",
 ]
@@ -76,14 +77,14 @@ RULE_SPECIAL_PREVIOUS = "_t"
 
 TITLE_SECTION = "t"
 FILENAME_SECTION = "n"
-# folder instead of directory since the option to output into folder is --folder
+# folder instead of directory since the option to output into folder is --subfolder
 FOLDER_SECTION = "f"
 
 DEFAULT_NAMEGEN_RULES = (
     "t:fc_full>p_title>pn_rm_if_complete>pn_prepend_vn_if_multiple>pn_full>v_title>"
     + "vn_full>s_title>text"
     + "|n:_t>filesafe_underscore"
-    + "|f:to_series>pn_rm>vn_rm>text>foldersafe_underscore"
+    + "|f:to_series>fc_rm>pn_rm>vn_rm>s_title>text>foldersafe_underscore"
 )
 
 CACHED_PARSED_NAMEGEGEN_RULES = None
@@ -271,7 +272,7 @@ def _default_initialize_components(series, volumes, parts, fc):
 def _apply_rules(components: List[Component], rules, outputs):
     for rule in rules:
         f_rule = getattr(sys.modules[__name__], rule, None)
-        logger.debug(f"Apply rule: {f_rule}")
+        logger.debug(f"Apply rule: {rule}")
         # array modified in place
         f_rule(components)
 
@@ -589,14 +590,20 @@ def s_trigram(components: List[Component]):
     raise NotImplementedError()
 
 
-def _default_vn(volumes):
-    volume_numbers = [(v.num, VN_INTERNAL) for v in volumes]
-    return volume_numbers
+def s_max_len60(components: List[Component]):
+    raise NotImplementedError()
 
 
-def _default_pn(parts):
-    part_numbers = [p.num_in_volume for p in parts]
-    return part_numbers
+def text(components: List[Component]):
+    outputs = [c.output for c in components if c.output]
+    str_value = " ".join(outputs)
+    str_component = Component(STR_COM, None, output=str_value)
+    _replace_all(components, str_component)
+
+
+def rm_space(components: List[Component]):
+    str_component = _find_str_component_implicit_text(components)
+    str_component.output = str_component.output.replace(" ", "")
 
 
 def filesafe_underscore(components: List[Component]):
@@ -612,23 +619,12 @@ def filesafe_space(components: List[Component]):
 
 def foldersafe_underscore(components: List[Component]):
     str_component = _find_str_component_implicit_text(components)
-    str_component.output = to_safe_foldername(str_component.output, "_")
+    str_component.output = to_safe_filename(str_component.output, "_")
 
 
 def foldersafe_space(components: List[Component]):
     str_component = _find_str_component_implicit_text(components)
-    str_component.output = to_safe_foldername(str_component.output, " ")
-
-
-def max_len60(components: List[Component]):
-    pass
-
-
-def text(components: List[Component]):
-    outputs = [c.output for c in components if c.output]
-    str_value = " ".join(outputs)
-    str_component = Component(STR_COM, None, output=str_value)
-    _replace_all(components, str_component)
+    str_component.output = to_safe_filename(str_component.output, " ")
 
 
 def _find_component_type(ctype, components: List[Component]):
@@ -650,8 +646,18 @@ def _find_str_component_implicit_text(components):
     return str_component
 
 
+def _default_vn(volumes):
+    volume_numbers = [(v.num, VN_INTERNAL) for v in volumes]
+    return volume_numbers
+
+
+def _default_pn(parts):
+    part_numbers = [p.num_in_volume for p in parts]
+    return part_numbers
+
+
 def _vn_to_single(vn):
-    if isinstance(vn, tuple):
+    if _is_list(vn):
         items = [p[0] for p in vn]
         return ".".join(items)
     return vn[0]
