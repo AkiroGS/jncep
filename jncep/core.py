@@ -22,7 +22,6 @@ from .utils import is_debug, to_safe_filename
 logger = logging.getLogger(__name__)
 console = utils.getConsole()
 
-# FIXME rename namegen_rules to namegen_rules
 EpubGenerationOptions = namedtuple(
     "EpubGenerationOptions",
     [

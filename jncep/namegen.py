@@ -1,13 +1,16 @@
+import ast
 from collections import namedtuple
 import copy
 import logging
 import numbers
+import re
+import string
 import sys
 from typing import List
 
 from attr import define
 
-from .utils import getConsole, to_safe_filename, to_safe_foldername
+from .utils import getConsole, to_safe_filename
 
 logger = logging.getLogger(__name__)
 console = getConsole()
@@ -57,9 +60,11 @@ GEN_RULES = [
     "s_title",
     "s_slug",
     "s_rm_stopwords",
+    "s_rm_subtitle",
     "s_acronym",
-    "s_trigram",
-    "s_max_len60",
+    "s_first_three",
+    "s_max_len30",
+    "legacy",
     "_t",  # special processing : takes title as starting point
     "text",
     "rm_space",
@@ -318,19 +323,30 @@ def p_to_volume(components: List[Component]):
 
 def p_to_series(components: List[Component]):
     p_component = _find_component_type(P_COM, components)
-    if p_component:
-        part = p_component.value
-        volume = part.volume
-        pn_component = Component(PN_COM, [part], _default_pn([part]))
-        vn_component = Component(VN_COM, [volume], _default_vn([volume]))
-        series_component = Component(S_COM, volume.series)
-        _replace_component(
-            components, p_component, series_component, vn_component, pn_component
-        )
+    if not p_component:
+        return
+    part = p_component.value
+    volume = part.volume
+    pn_component = Component(PN_COM, [part], _default_pn([part]))
+    vn_component = Component(VN_COM, [volume], _default_vn([volume]))
+    series_component = Component(S_COM, volume.series)
+    _replace_component(
+        components, p_component, series_component, vn_component, pn_component
+    )
 
 
 def p_split_part(components: List[Component]):
-    raise NotImplementedError()
+    p_component = _find_component_type(P_COM, components)
+    if not p_component:
+        return
+
+    part = p_component.value
+    volume = part.volume
+
+    # no need to parse for parts
+    v_com = Component(V_COM, volume)
+    pn_com = Component(PN_COM, part.num_in_volume)
+    _replace_component(components, p_component, v_com, pn_com)
 
 
 def p_title(components: List[Component]):
@@ -448,7 +464,34 @@ def v_to_series(components: List[Component]):
 
 
 def v_split_volume(components: List[Component]):
-    raise NotImplementedError()
+    component = _find_component_type(V_COM, components)
+    if not component:
+        return
+
+    volume = component.value
+    series = volume.series
+
+    diff = _str_diff(volume.raw_data.title, series.raw_date.title)
+    if diff:
+        vn = _clean(diff)
+        vn_parts = _parse_volume_number(vn)
+
+        s_com = Component(S_COM, series)
+        vn_com = Component(VN_COM, [volume], vn_parts)
+        _replace_component(components, component, s_com, vn_com)
+
+
+def _parse_volume_number(vn):
+    # TODO adapt for JNC Nina : diff lang
+    volume_match = re.search(r"Volume (\d+)", vn)
+    part_match = re.search(r"Part (\w+)", vn)
+    result = []
+    if volume_match:
+        result.append((int(volume_match.group(1)), "Volume"))
+    if part_match:
+        result.append((part_match.group(1), "Part"))
+    result.sort(key=lambda x: vn.index(x[1]))
+    return result
 
 
 def v_title(components: List[Component]):
@@ -476,14 +519,13 @@ def vn_number(components: List[Component]):
     for v in volume_numbers:
         # TODO specific type : CompoundVN
         # => add when implementing v_split_volume
-        if _is_list(v):
-            for j, p in enumerate(v):
-                if isinstance(p[0], str):
-                    # TODO for JNC Nina : something diff
-                    p0l = p[0].lower()
-                    if p0l in EN_NUMBERS:
-                        n = EN_NUMBERS[p0l]
-                        v[j] = (n, p[1])
+        for j, p in enumerate(v):
+            if isinstance(p[0], str):
+                # TODO for JNC Nina : something diff
+                p0l = p[0].lower()
+                if p0l in EN_NUMBERS:
+                    n = EN_NUMBERS[p0l]
+                    v[j] = (n, p[1])
 
 
 def vn_merge(components: List[Component]):
@@ -493,10 +535,9 @@ def vn_merge(components: List[Component]):
 
     volume_numbers = vn_component.transformed_value
     for i, v in enumerate(volume_numbers):
-        if _is_list(v):
-            # otherwise no need to merge
-            to_merge = [p[0] for p in v]
-            volume_numbers[i] = (".".join(to_merge), VN_MERGED)
+        if len(v) > 1:
+            vn = _vn_to_single(v)
+            volume_numbers[i] = (vn, VN_MERGED)
 
 
 def vn_0pad(components: List[Component]):
@@ -506,13 +547,9 @@ def vn_0pad(components: List[Component]):
 
     volume_numbers = vn_component.transformed_value
     for i, v in enumerate(volume_numbers):
-        # TODO always store VN as a list of list of tuples
-        if _is_list(v):
-            # TODO do instead: int(...). + format ?
-            padded = [(str(p[0]).zfill(2), p[1]) for p in v]
-            volume_numbers[i] = padded
-        else:
-            volume_numbers[i] = (str(v[0]).zfill(2), v[1])
+        # TODO do instead: int(...). + format ?
+        padded = [(str(p[0]).zfill(2), p[1]) for p in v]
+        volume_numbers[i] = padded
 
 
 def vn_short(components: List[Component]):
@@ -539,24 +576,24 @@ def vn_full(components: List[Component]):
     if not component:
         return
 
-    volumes = component.transformed_value
-    if len(volumes) > 1:
+    base_vns = component.transformed_value
+    if len(base_vns) > 1:
         # implicit
         vn_merge(components)
 
-        volume_nums = [volume[0] for volume in volumes]
-        volume_nums = [str(vn) for vn in volume_nums]
+        volume_nums = [str(vn[0]) for vn in base_vns]
         volume_nums = ", ".join(volume_nums[:-1]) + " & " + volume_nums[-1]
         component.output = f"Volumes {volume_nums}"
     else:
         # in this case : the 2 part Volume number may have been preserved
-        volume = volumes[0]
-        if _is_list(volume) and len(volume) > 1:
+        vn = base_vns[0]
+        if len(vn) > 1:
+            # preserved
             # [(2, "Part"), (5, "Volume")]
-            component.output = " ".join([f"{p[1]} {p[0]}" for p in volume])
+            component.output = " ".join([f"{p[1]} {p[0]}" for p in vn])
         else:
             # (2, "VN_INTERNAL")
-            component.output = f"Volume {volume[0]}"
+            component.output = f"Volume {vn[0]}"
 
 
 def to_series(components: List[Component]):
@@ -582,15 +619,46 @@ def s_rm_stopwords(components: List[Component]):
     raise NotImplementedError()
 
 
+def s_rm_subtitle(components: List[Component]):
+    # remove the part of the title after the first :
+    raise NotImplementedError()
+
+
+def _remove_after_colon(title):
+    return title.split(":", 1)[0]
+
+
 def s_acronym(components: List[Component]):
     raise NotImplementedError()
 
 
-def s_trigram(components: List[Component]):
+def _get_acronym(title):
+    title = "".join(ch for ch in title if ch not in string.punctuation)
+    words = title.split()
+    acronym = "".join(word[0] for word in words)
+    return acronym.upper()
+
+
+def s_first_three(components: List[Component]):
     raise NotImplementedError()
 
 
-def s_max_len60(components: List[Component]):
+def _get_first_three(title):
+    title = "".join(ch for ch in title if ch not in string.punctuation)
+    words = title.split()
+    acronym = "".join(word[:3] for word in words)
+    return acronym.upper()
+
+
+def s_max_len30(components: List[Component]):
+    component = _find_component_type(S_COM, components)
+    if not component or not component.output:
+        return
+
+    component.output = component.output[:30]
+
+
+def legacy(components: List[Component]):
     raise NotImplementedError()
 
 
@@ -647,7 +715,9 @@ def _find_str_component_implicit_text(components):
 
 
 def _default_vn(volumes):
-    volume_numbers = [(v.num, VN_INTERNAL) for v in volumes]
+    # multiple "parts" for volumes possible : Usually 1 but sometimes
+    # Volume 1 Part Two or Part 3 Volume 8 => so nested array
+    volume_numbers = [[(v.num, VN_INTERNAL)] for v in volumes]
     return volume_numbers
 
 
@@ -690,6 +760,26 @@ def _index(components, item):
         (i for i, component in enumerate(components) if component is item), None
     )
     return item_index
+
+
+def _str_diff(str1, str2):
+    if str1.startswith(str2):
+        return str1[len(str2) :]
+    return None
+
+
+def _clean(s: str):
+    return s.strip(":").strip()
+
+
+def _get_functions_in_range(filename, start_line, end_line):
+    with open(filename) as f:
+        module = ast.parse(f.read())
+
+    functions = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+    functions_in_range = [f for f in functions if start_line <= f.lineno <= end_line]
+
+    return [f.name for f in functions_in_range]
 
 
 _init_module()
