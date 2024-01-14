@@ -40,6 +40,8 @@ CACHED_PARSED_NAMEGEGEN_RULES = None
 CACHED_STOPWORDS = {}
 
 # TODO use enum
+# TODO match var name with value + add other types : some rules take only output
+# or transformed_value + change value/tv to bse_value/value
 FC_COM = "FC"
 PN_COM = "P_NUM"
 VN_COM = "V_NUM"

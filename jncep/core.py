@@ -143,6 +143,7 @@ async def create_epub(series, volumes, parts, epub_generation_options):
 
         output_filepath = os.path.join(output_folderpath, output_filename)
 
+        # TODO process subfolder in to_max_len
         output_filepath = _to_max_len_filepath(output_filepath, extension)
 
         # TODO write to memory then async fs write here ? (uses epublib
@@ -295,6 +296,7 @@ async def extract_images(parts, epub_generation_options):
                 img_filepath = os.path.join(
                     epub_generation_options.output_dirpath, img_filename
                 )
+                # TODO process subfolder like epub
 
                 img_filepath = _to_max_len_filepath(img_filepath, ext)
 
@@ -310,6 +312,7 @@ async def extract_content(parts, epub_generation_options):
             content_filepath = os.path.join(
                 epub_generation_options.output_dirpath, content_filename
             )
+            # TODO process subfolder like epub
 
             content_filepath = _to_max_len_filepath(content_filepath, extension)
 

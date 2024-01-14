@@ -1,5 +1,3 @@
-from collections import namedtuple
-
 import attr
 from ebooklib import epub
 import importlib_resources as imres
@@ -21,17 +19,6 @@ class BookDetails:
     toc = attr.ib()
     contents = attr.ib()
     images = attr.ib()
-
-
-TitleSegments = namedtuple(
-    "TitleSegments",
-    [
-        "series_title",
-        "series_slug",
-        "volume_segment",
-        "part_segment",
-    ],
-)
 
 
 @attr.s
