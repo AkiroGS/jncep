@@ -1,4 +1,3 @@
-import ast
 from collections import namedtuple
 import copy
 import logging
@@ -9,71 +8,14 @@ import sys
 from typing import List
 
 from attr import define
+import importlib_resources as imres
 
 from .utils import getConsole, to_safe_filename
 
 logger = logging.getLogger(__name__)
 console = getConsole()
 
-GEN_RULES = [
-    # "slug",
-    # "volume_part_2_digit",
-    # "volume_dot_volume_part",
-    # "series_part_dot_volume",  # Volume 2.5
-    # "volume_dot_part",  # only for single parts : Part 2.5 or Part 5.2.4
-    # "zero_padding_series_part",
-    # "zero_padding_volume",
-    # "zero_padding_volume_part",
-    # "zero_padding_part",
-    # "no_part_list",
-    # "no_small_words",
-    # "acronym",
-    # "first_letters",
-    # "no_separator",
-    # # "unsafe"
-    # "safe",  # default : unsafe must be explicitly specified
-    ######
-    "fc_rm",
-    "fc_short",
-    "fc_full",
-    "p_to_volume",
-    "p_to_series",
-    "p_split_part",
-    "p_title",
-    "pn_rm",
-    "pn_rm_if_complete",
-    "pn_prepend_vn_if_multiple",
-    "pn_prepend_vn",
-    "pn_0pad",
-    "pn_short",
-    "pn_full",
-    "v_to_series",
-    "v_split_volume",
-    "v_title",
-    "vn_rm",
-    "vn_number",
-    "vn_merge",
-    "vn_0pad",
-    "vn_short",
-    "vn_full",
-    "to_series",
-    "s_title",
-    "s_slug",
-    "s_rm_stopwords",
-    "s_rm_subtitle",
-    "s_acronym",
-    "s_first_three",
-    "s_max_len30",
-    "legacy",
-    "_t",  # special processing : takes title as starting point
-    "text",
-    "rm_space",
-    "filesafe_underscore",
-    "filesafe_space",
-    # TODO remove ? use only filesafe
-    "foldersafe_underscore",
-    "foldersafe_space",
-]
+GEN_RULES = None
 
 DEF_SEP = "|"
 RULE_SEP = ">"
@@ -88,11 +30,14 @@ FOLDER_SECTION = "f"
 DEFAULT_NAMEGEN_RULES = (
     "t:fc_full>p_title>pn_rm_if_complete>pn_prepend_vn_if_multiple>pn_full>v_title>"
     + "vn_full>s_title>text"
+    # "t:legacy"
     + "|n:_t>filesafe_underscore"
-    + "|f:to_series>fc_rm>pn_rm>vn_rm>s_title>text>foldersafe_underscore"
+    + "|f:to_series>fc_rm>pn_rm>vn_rm>s_title>text>filesafe_underscore"
 )
 
 CACHED_PARSED_NAMEGEGEN_RULES = None
+# dict : per language
+CACHED_STOPWORDS = {}
 
 # TODO use enum
 FC_COM = "FC"
@@ -105,10 +50,11 @@ STR_COM = "STR"
 
 VN_INTERNAL = "VN_INTERNAL"
 VN_MERGED = "VN_MERGED"
+VN_SPECIAL = "VN_SPECIAL"
 
 
-# TODO for JNC Nina : something different => + i18n of PArt, Volume
-# should be enough
+# TODO for JNC Nina : something different => + i18n of Part, Volume
+# should be enough until 15
 EN_NUMBERS = {
     "one": 1,
     "two": 2,
@@ -144,9 +90,19 @@ class InvalidNamegenRulesError(Exception):
     pass
 
 
-def _init_module():
-    # TODO init Gen_Rules
+class UnsupportedStopwordLanguage(Exception):
     pass
+
+
+def _init_module():
+    global GEN_RULES
+
+    gen_rules = _get_functions_between_comments(
+        __file__, "# GEN_RULES_BEGIN", "# GEN_RULES_END"
+    )
+    # special rule
+    gen_rules.append("_t")
+    GEN_RULES = gen_rules
 
 
 def parse_namegen_rules(namegen_rules):
@@ -162,11 +118,11 @@ def parse_namegen_rules(namegen_rules):
         gen_rules = _do_parse_namegen_rules(namegen_rules)
 
         if TITLE_SECTION not in gen_rules:
-            gen_rules[TITLE_SECTION] = default_gen_rules.title
+            gen_rules[TITLE_SECTION] = default_gen_rules[TITLE_SECTION]
         if FILENAME_SECTION not in gen_rules:
-            gen_rules[FILENAME_SECTION] = default_gen_rules.filename
+            gen_rules[FILENAME_SECTION] = default_gen_rules[FILENAME_SECTION]
         if FOLDER_SECTION not in gen_rules:
-            gen_rules[FOLDER_SECTION] = default_gen_rules.folder
+            gen_rules[FOLDER_SECTION] = default_gen_rules[FOLDER_SECTION]
 
         CACHED_PARSED_NAMEGEGEN_RULES = gen_rules
     else:
@@ -200,7 +156,14 @@ def _extract_components(tnf):
     for component in tnf:
         for c_def in [TITLE_SECTION, FILENAME_SECTION, FOLDER_SECTION]:
             if component.startswith(c_def + ":"):
+                # strip header
                 tnf_defs[c_def] = component[2:]
+
+    if not tnf_defs and len(tnf) == 1:
+        # assume the entire string only contains the title (without prefix)
+        # will throw an error later when parsing the rules if assumption is wrong
+        tnf_defs[TITLE_SECTION] = tnf[0]
+
     return tnf_defs
 
 
@@ -215,25 +178,29 @@ def _validate(arr):
 
 
 def generate_names(series, volumes, parts, fc, parsed_namegen_rules):
-    outputs = []
+    # TODO handle language (for JNC Nina)
+    values = []
     for section in [TITLE_SECTION, FILENAME_SECTION, FOLDER_SECTION]:
         rules = parsed_namegen_rules[section]
 
         components, rules = _initialize_components(
-            series, volumes, parts, fc, rules, outputs
+            series, volumes, parts, fc, rules, values
         )
 
-        _apply_rules(components, rules, outputs)
+        _apply_rules(components, rules)
 
-        if len(components) != 1 or components[0].tag != STR_COM:
-            logger.debug(f"Components : {components}")
+        if (
+            len(components) != 1
+            or components[0].tag != STR_COM
+            or not components[0].value
+        ):
             raise InvalidNamegenRulesError(
                 "Invalid namegen definition: should generate a string"
             )
 
-        outputs.append(components[0])
+        values.append(components[0])
 
-    return [o.output for o in outputs]
+    return [o.value for o in values]
 
 
 def _initialize_components(series, volumes, parts, fc, rules, outputs):
@@ -274,12 +241,15 @@ def _default_initialize_components(series, volumes, parts, fc):
     return components
 
 
-def _apply_rules(components: List[Component], rules, outputs):
+def _apply_rules(components: List[Component], rules):
     for rule in rules:
         f_rule = getattr(sys.modules[__name__], rule, None)
         logger.debug(f"Apply rule: {rule}")
         # array modified in place
         f_rule(components)
+
+
+# GEN_RULES_BEGIN
 
 
 def fc_rm(components: List[Component]):
@@ -345,7 +315,7 @@ def p_split_part(components: List[Component]):
 
     # no need to parse for parts
     v_com = Component(V_COM, volume)
-    pn_com = Component(PN_COM, part.num_in_volume)
+    pn_com = Component(PN_COM, [part], [part.num_in_volume])
     _replace_component(components, p_component, v_com, pn_com)
 
 
@@ -471,13 +441,13 @@ def v_split_volume(components: List[Component]):
     volume = component.value
     series = volume.series
 
-    diff = _str_diff(volume.raw_data.title, series.raw_date.title)
+    diff = _str_diff(volume.raw_data.title, series.raw_data.title)
     if diff:
         vn = _clean(diff)
         vn_parts = _parse_volume_number(vn)
 
         s_com = Component(S_COM, series)
-        vn_com = Component(VN_COM, [volume], vn_parts)
+        vn_com = Component(VN_COM, [volume], [vn_parts])
         _replace_component(components, component, s_com, vn_com)
 
 
@@ -491,6 +461,11 @@ def _parse_volume_number(vn):
     if part_match:
         result.append((part_match.group(1), "Part"))
     result.sort(key=lambda x: vn.index(x[1]))
+    if not result:
+        # cannot parse into the Volume, Part : keep the incoming vn
+        # can happen for example Arifureta: "Short Stories" for the side stories
+        # volume name
+        result = [(vn, VN_SPECIAL)]
     return result
 
 
@@ -504,6 +479,16 @@ def v_title(components: List[Component]):
 def vn_rm(components: List[Component]):
     vn_component = _find_component_type(VN_COM, components)
     if not vn_component:
+        return
+    _del_component(components, vn_component)
+
+
+def vn_rm_if_pn(components: List[Component]):
+    vn_component = _find_component_type(VN_COM, components)
+    if not vn_component:
+        return
+    pn_component = _find_component_type(PN_COM, components)
+    if not pn_component:
         return
     _del_component(components, vn_component)
 
@@ -562,13 +547,14 @@ def vn_short(components: List[Component]):
 
     volumes = component.transformed_value
     if len(volumes) > 1:
+        # may look weird for VN_SPECIAL but OK
         volume0 = volumes[0][0]
         volume1 = volumes[1][0]
         volume_nums = f"{volume0}-{volume1}"
         component.output = f"{volume_nums}"
     else:
         volume = volumes[0][0]
-        component.output = f"{volume.num} "
+        component.output = f"{volume.num}"
 
 
 def vn_full(components: List[Component]):
@@ -576,24 +562,38 @@ def vn_full(components: List[Component]):
     if not component:
         return
 
-    base_vns = component.transformed_value
-    if len(base_vns) > 1:
+    volumes = component.value
+    if len(volumes) > 1:
         # implicit
         vn_merge(components)
 
-        volume_nums = [str(vn[0]) for vn in base_vns]
+        base_vns = component.transformed_value
+        volume_nums = [str(vn[0][0]) for vn in base_vns]
         volume_nums = ", ".join(volume_nums[:-1]) + " & " + volume_nums[-1]
         component.output = f"Volumes {volume_nums}"
     else:
         # in this case : the 2 part Volume number may have been preserved
+        base_vns = component.transformed_value
         vn = base_vns[0]
         if len(vn) > 1:
             # preserved
             # [(2, "Part"), (5, "Volume")]
-            component.output = " ".join([f"{p[1]} {p[0]}" for p in vn])
+            nparts = []
+            for p in vn:
+                if p[1] == VN_SPECIAL:
+                    nparts.append(p[0])
+                else:
+                    nparts.append(f"{p[1]} {p[0]}")
+            component.output = " ".join(nparts)
         else:
-            # (2, "VN_INTERNAL")
-            component.output = f"Volume {vn[0]}"
+            # [(2, "VN_INTERNAL")] or [(2, "Volume")] : 2nd case if v_parse_vn used
+            vn0 = vn[0]
+            if vn0[1] == VN_SPECIAL:
+                o = vn0[0]
+            else:
+                # should be always Volume if only one of vn
+                o = f"Volume {vn0[0]}"
+            component.output = o
 
 
 def to_series(components: List[Component]):
@@ -616,38 +616,47 @@ def s_slug(components: List[Component]):
 
 
 def s_rm_stopwords(components: List[Component]):
-    raise NotImplementedError()
+    component = _find_component_type(S_COM, components)
+    if not component:
+        return
+
+    # TODO take language as argument
+    stopwords = _load_stopwords("en")
+
+    title = component.output
+    words = title.split()
+    no_stopwords = [word for word in words if word not in stopwords]
+    component.output = " ".join(no_stopwords)
 
 
 def s_rm_subtitle(components: List[Component]):
-    # remove the part of the title after the first :
-    raise NotImplementedError()
-
-
-def _remove_after_colon(title):
-    return title.split(":", 1)[0]
+    component = _find_component_type(S_COM, components)
+    if not component or not component.output:
+        return
+    title = component.output
+    component.output = title.split(":", 1)[0]
 
 
 def s_acronym(components: List[Component]):
-    raise NotImplementedError()
-
-
-def _get_acronym(title):
+    component = _find_component_type(S_COM, components)
+    if not component or not component.output:
+        return
+    title = component.output
     title = "".join(ch for ch in title if ch not in string.punctuation)
     words = title.split()
     acronym = "".join(word[0] for word in words)
-    return acronym.upper()
+    component.output = acronym
 
 
-def s_first_three(components: List[Component]):
-    raise NotImplementedError()
-
-
-def _get_first_three(title):
+def s_first3(components: List[Component]):
+    component = _find_component_type(S_COM, components)
+    if not component or not component.output:
+        return
+    title = component.output
     title = "".join(ch for ch in title if ch not in string.punctuation)
     words = title.split()
-    acronym = "".join(word[:3] for word in words)
-    return acronym.upper()
+    acronym = "".join(word[:3].capitalize() for word in words)
+    component.output = acronym
 
 
 def s_max_len30(components: List[Component]):
@@ -659,40 +668,114 @@ def s_max_len30(components: List[Component]):
 
 
 def legacy(components: List[Component]):
-    raise NotImplementedError()
+    # assume launched first, not after transformation
+    p_component = _find_component_type(P_COM, components)
+    v_component = _find_component_type(V_COM, components)
+    s_component = _find_component_type(S_COM, components)
+    fc_component = _find_component_type(FC_COM, components)
+
+    if p_component:
+        # single part
+        part = p_component.value
+        title_base = part.raw_data.title
+
+        suffix = ""
+        is_final = fc_component.value.final
+        if is_final:
+            suffix = " [Final]"
+
+        title = f"{title_base}{suffix}"
+    else:
+        if s_component:
+            # multiple volumes
+            series = s_component.value
+
+            title_base = series.raw_data.title
+
+            vn_component = _find_component_type(VN_COM, components)
+            # assume legacy launched first => components is in the initialization state
+            # so take the .value instead of .transformed_value
+            volumes = vn_component.value
+            # ordered already
+            volume_nums = [str(v.num) for v in volumes]
+            volume_nums = ", ".join(volume_nums[:-1]) + " & " + volume_nums[-1]
+            volume_segment = f"Volumes {volume_nums}"
+
+            pn_component = _find_component_type(PN_COM, components)
+            parts = pn_component.value
+            volume_num0 = parts[0].volume.num
+            part_num0 = parts[0].num_in_volume
+            volume_num1 = parts[-1].volume.num
+            part_num1 = parts[-1].num_in_volume
+
+            # check only last part in the epub
+            suffix = ""
+            is_final = fc_component.value.final
+            if is_final:
+                suffix = " - Final"
+
+            part_segment = (
+                f"Parts {volume_num0}.{part_num0} to "
+                f"{volume_num1}.{part_num1}{suffix}"
+            )
+
+            if title_base[-1] in string.punctuation:
+                # like JNC : no double punctuation mark
+                colon = ""
+            else:
+                colon = ":"
+            title = f"{title_base}{colon} {volume_segment} [{part_segment}]"
+
+        else:
+            # single volume
+            volume = v_component.value
+            title_base = volume.raw_data.title
+
+            part_num0 = parts[0].num_in_volume
+            part_num1 = parts[-1].num_in_volume
+
+            is_complete = fc_component.value.complete
+            is_final = fc_component.value.final
+            if is_complete:
+                part_segment = "Complete"
+            else:
+                # check the last part in the epub
+                suffix = ""
+                if is_final:
+                    suffix = " - Final"
+                part_segment = f"Parts {part_num0} to {part_num1}{suffix}"
+
+            title = f"{title_base} [{part_segment}]"
+
+    str_component = Component(STR_COM, title)
+    _replace_all(components, str_component)
 
 
 def text(components: List[Component]):
     outputs = [c.output for c in components if c.output]
+    # TODO add : after s_com ? like in the legacy version
     str_value = " ".join(outputs)
-    str_component = Component(STR_COM, None, output=str_value)
+    # for STR_COM, its value is the string (not output)
+    str_component = Component(STR_COM, str_value)
     _replace_all(components, str_component)
 
 
 def rm_space(components: List[Component]):
     str_component = _find_str_component_implicit_text(components)
-    str_component.output = str_component.output.replace(" ", "")
+    str_component.value = str_component.value.replace(" ", "")
 
 
 def filesafe_underscore(components: List[Component]):
     str_component = _find_str_component_implicit_text(components)
-    # TODO create new insteaf of updating ?
-    str_component.output = to_safe_filename(str_component.output, "_")
+    str_component.value = to_safe_filename(str_component.value, "_")
 
 
 def filesafe_space(components: List[Component]):
     str_component = _find_str_component_implicit_text(components)
-    str_component.output = to_safe_filename(str_component.output, " ")
+    str_component.value = to_safe_filename(str_component.value, " ")
 
 
-def foldersafe_underscore(components: List[Component]):
-    str_component = _find_str_component_implicit_text(components)
-    str_component.output = to_safe_filename(str_component.output, "_")
-
-
-def foldersafe_space(components: List[Component]):
-    str_component = _find_str_component_implicit_text(components)
-    str_component.output = to_safe_filename(str_component.output, " ")
+# GEN_RULES_END
 
 
 def _find_component_type(ctype, components: List[Component]):
@@ -728,7 +811,7 @@ def _default_pn(parts):
 
 def _vn_to_single(vn):
     if _is_list(vn):
-        items = [p[0] for p in vn]
+        items = [str(p[0]) for p in vn]
         return ".".join(items)
     return vn[0]
 
@@ -772,14 +855,44 @@ def _clean(s: str):
     return s.strip(":").strip()
 
 
-def _get_functions_in_range(filename, start_line, end_line):
-    with open(filename) as f:
-        module = ast.parse(f.read())
+def _load_stopwords(language):
+    if language in CACHED_STOPWORDS:
+        return CACHED_STOPWORDS[language]
 
-    functions = [node for node in module.body if isinstance(node, ast.FunctionDef)]
-    functions_in_range = [f for f in functions if start_line <= f.lineno <= end_line]
+    path = imres.files(__package__) / "res" / f"{language}_stopwords.txt"
+    if not path.is_file():
+        raise UnsupportedStopwordLanguage(f"Unsupported: {language}")
 
-    return [f.name for f in functions_in_range]
+    with path.open("r", encoding="utf-8") as f:
+        # 3.8 is the minimal version anyway so := is supported
+        stopwords = [sw for w in f.readlines() if (sw := w.strip())]
+        CACHED_STOPWORDS[language] = set(stopwords)
+
+    return CACHED_STOPWORDS[language]
+
+
+def _get_functions_between_comments(filename, start_comment, end_comment):
+    with open(filename, "r") as file:
+        lines = file.readlines()
+
+    start_line = next(
+        (i for i, line in enumerate(lines) if line.startswith(start_comment)), None
+    )
+    end_line = next(
+        (i for i, line in enumerate(lines) if line.startswith(end_comment)), None
+    )
+
+    if start_line is None or end_line is None:
+        return []
+
+    function_lines = lines[start_line:end_line]
+    functions = [
+        line
+        for line in function_lines
+        if line.strip().startswith("def ") and not line.strip().startswith("def _")
+    ]
+
+    return [f.split("(")[0].replace("def ", "").strip() for f in functions]
 
 
 _init_module()
