@@ -13,7 +13,7 @@ from typing import List
 from attr import define
 import importlib_resources as imres
 
-from .utils import getConsole, to_safe_filename
+from .utils import getConsole, to_safe_filename, to_safe_filename_limited
 
 logger = logging.getLogger(__name__)
 console = getConsole()
@@ -266,6 +266,14 @@ def fc_rm(components: List[Component]):
     if not component:
         return
     _del_component(components, component)
+
+
+def fc_rm_if_complete(components: List[Component]):
+    component = _find_component_type(ComType.FC_COM, components)
+    if not component:
+        return
+    if component.value.complete:
+        _del_component(components, component)
 
 
 def fc_short(components: List[Component]):
@@ -531,7 +539,7 @@ def vn_merge(components: List[Component]):
     for i, v in enumerate(volume_numbers):
         if len(v) > 1:
             vn = _vn_to_single(v)
-            volume_numbers[i] = (vn, VnType.VN_MERGED)
+            volume_numbers[i] = [(vn, VnType.VN_MERGED)]
 
 
 def vn_0pad(components: List[Component]):
@@ -775,14 +783,30 @@ def rm_space(components: List[Component]):
     str_component.value = str_component.value.replace(" ", "")
 
 
+def replace_space_by_underscore(components: List[Component]):
+    str_component = _find_str_component_implicit_text(components)
+    str_component.value = str_component.value.replace(" ", "_")
+
+
 def filesafe_underscore(components: List[Component]):
     str_component = _find_str_component_implicit_text(components)
     str_component.value = to_safe_filename(str_component.value, "_")
 
 
+# TODO allow passing of arguments : for example with ? after rule name
+def filesafe_underscore_limited(components: List[Component]):
+    str_component = _find_str_component_implicit_text(components)
+    str_component.value = to_safe_filename_limited(str_component.value, "_")
+
+
 def filesafe_space(components: List[Component]):
     str_component = _find_str_component_implicit_text(components)
     str_component.value = to_safe_filename(str_component.value, " ")
+
+
+def filesafe_space_limited(components: List[Component]):
+    str_component = _find_str_component_implicit_text(components)
+    str_component.value = to_safe_filename_limited(str_component.value, " ")
 
 
 # GEN_RULES_END
