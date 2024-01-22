@@ -33,35 +33,14 @@ FOLDER_SECTION = "f"
 # legacy : should be equivalent of
 # "t:fc_full>p_title>pn_rm_if_complete>pn_prepend_vn_if_multiple>pn_full>v_title>"
 # + "vn_full>s_title>text"
+# n:_t>filesafe_underscore
+# f:to_series>fc_rm>pn_rm>vn_rm>s_title>text>filesafe_underscore
 # but legacy more prudent
-DEFAULT_NAMEGEN_RULES = (
-    "t:legacy"
-    + "|n:_t>filesafe_underscore"
-    + "|f:to_series>fc_rm>pn_rm>vn_rm>s_title>text>filesafe_underscore"
-)
+DEFAULT_NAMEGEN_RULES = "t:t_legacy|n:n_legacy|f:f_legacy"
 
 CACHED_PARSED_NAMEGEGEN_RULES = None
 # dict : per language
 CACHED_STOPWORDS = {}
-
-
-# TODO match var name with value + add other types : some rules take only output
-# or transformed_value
-class ComType(Enum):
-    FC_COM = auto()
-    PN_COM = auto()
-    VN_COM = auto()
-    P_COM = auto()
-    V_COM = auto()
-    S_COM = auto()
-    STR_COM = auto()
-
-
-class VnType(Enum):
-    VN_INTERNAL = auto()
-    VN_MERGED = auto()
-    VN_SPECIAL = auto()
-
 
 # TODO for JNC Nina : something different => + i18n of Part, Volume
 # should be enough until 15
@@ -82,6 +61,22 @@ EN_NUMBERS = {
     "fourteen": 14,
     "fifteen": 15,
 }
+
+
+class ComType(Enum):
+    FC_COM = auto()
+    PN_COM = auto()
+    VN_COM = auto()
+    P_COM = auto()
+    V_COM = auto()
+    S_COM = auto()
+    STR_COM = auto()
+
+
+class VnType(Enum):
+    VN_INTERNAL = auto()
+    VN_MERGED = auto()
+    VN_SPECIAL = auto()
 
 
 @define
@@ -684,7 +679,7 @@ def s_max_len30(components: List[Component]):
     component.output = component.output[:30]
 
 
-def legacy(components: List[Component]):
+def t_legacy(components: List[Component]):
     # assume launched first, not after transformation
     p_component = _find_component_type(ComType.P_COM, components)
     v_component = _find_component_type(ComType.V_COM, components)
@@ -711,8 +706,8 @@ def legacy(components: List[Component]):
 
             vn_component = _find_component_type(ComType.VN_COM, components)
             # assume legacy launched first => components is in the initialization state
-            # so take the .value instead of .transformed_value
-            volumes = vn_component.value
+            # so take the .base_value instead of .value
+            volumes = vn_component.base_value
             # ordered already
             volume_nums = [str(v.num) for v in volumes]
             volume_nums = ", ".join(volume_nums[:-1]) + " & " + volume_nums[-1]
@@ -748,6 +743,11 @@ def legacy(components: List[Component]):
             volume = v_component.value
             title_base = volume.raw_data.title
 
+            pn_component = _find_component_type(ComType.PN_COM, components)
+            # assume legacy launched first => components is in the initialization state
+            # so take the .value instead of .transformed_value
+            parts = pn_component.base_value
+
             part_num0 = parts[0].num_in_volume
             part_num1 = parts[-1].num_in_volume
 
@@ -766,6 +766,37 @@ def legacy(components: List[Component]):
 
     str_component = Component(ComType.STR_COM, title)
     _replace_all(components, str_component)
+
+
+def n_legacy(components: List[Component]):
+    t_legacy(components)
+
+    str_com = _find_str_component_implicit_text(components)
+    title = str_com.value
+    filename = to_safe_filename(title)
+
+    str_com = Component(ComType.STR_COM, filename)
+    _replace_all(components, str_com)
+
+
+def f_legacy(components: List[Component]):
+    # assume launched first, not after transformation
+    # must be one of the three according to _initialize_components
+    p_component = _find_component_type(ComType.P_COM, components)
+    v_component = _find_component_type(ComType.V_COM, components)
+    s_component = _find_component_type(ComType.S_COM, components)
+
+    if p_component:
+        series = p_component.value.volume.series
+    elif v_component:
+        series = v_component.value.series
+    elif s_component:
+        series = s_component.value
+
+    folder = to_safe_filename(series.raw_data.title)
+
+    str_com = Component(ComType.STR_COM, folder)
+    _replace_all(components, str_com)
 
 
 def text(components: List[Component]):

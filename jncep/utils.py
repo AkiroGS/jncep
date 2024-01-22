@@ -67,7 +67,7 @@ def to_safe_filename_limited(name, char_replace="_"):
     name = "".join(
         c for c in unicodedata.normalize("NFD", name) if unicodedata.category(c) != "Mn"
     )
-    safe = re.sub(r"[/\\?%*:,=;|\"!<>\x7F\x00-\x1F]", char_replace, name)
+    safe = re.sub(r"[/\\?%*:,=;|'\"!<>$#\x7F\x00-\x1F]", char_replace, name)
     safe = re.sub(rf"{char_replace}+", char_replace, safe)
     safe = safe.strip(char_replace)
     return safe
